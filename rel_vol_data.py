@@ -1,6 +1,6 @@
 from caracterizing import main
-from mathplot
 import matplotlib.pyplot as plt
+import numpy as np
 
 m = [2, 3, 4, 5]
 nivel = 2
@@ -35,7 +35,7 @@ plt.plot(m, y[2], marker='^', markersize=3, linestyle='-.', linewidth=1, color='
 
 # Labels e título
 plt.xlabel("Qtde de medições por parte")
-plt.ylabel("Volume relativo")
+plt.ylabel("Volume relativo (%)")
 plt.title("Variação do volume relativo por conjunto")
 
 # Grid apenas principal
@@ -62,7 +62,7 @@ plt.bar(m, var, color='skyblue')
 # Adicionando título e rótulos
 plt.title('Diferença de volume relativo para o conjunto quase-quântico e quântico')
 plt.xlabel('Qtde de medições por parte')
-plt.ylabel('Diferença no volume relativo')
+plt.ylabel('Diferença no volume relativo (%)')
 
 # Grid apenas principal
 plt.grid(True, which='major', linestyle='-', linewidth=0.5, axis="y", alpha=1)
