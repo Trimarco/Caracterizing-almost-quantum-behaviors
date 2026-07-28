@@ -2,20 +2,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d
 from itertools import product
-from definitions import build_ns_matrix, L_polytope_extremal, is_convex_combination_cvxpy, teste_NPA, sorteio, hierarquia_NPA
+from definitions import build_ns_matrix, L_polytope_extremal, is_convex_combination_cvxpy, teste_NPA, draw, NPA_hierarchy
 import random
 
 
 
 def main(n_pontos, NPA, measurements):
 
-	# DECLARANDO VARIÁVEIS INICIAIS
+	# DEFINING THE PARAMETERS
 	#___________________________________________________________________________________________________________________________________#
 
-	qtde = n_pontos  # número de pontos a serem sorteados dentro do politopo não sinalizante
-	nivel_n_NPA = NPA  # nível "p" da hierarquia NPA
-	rng = random.randint(1, 100)  # número aleatório entre 1 e 100 para ser usado como "seed" no sorteio
-	m = measurements  # número de medições possíveis para cada parte A e B (2, m, r)
+	qtde = n_pontos  # numbevr of correlations drawed in non-sig polytope 
+	level_n_NPA = NPA  # level "n" of NPA hierarchy
+	rng = random.randint(1, 100)  # random number generator
+	m = measurements  # number of possible mesuramentsfor each part A and B (2, m, r)
 
 	#___________________________________________________________________________________________________________________________________#
 
@@ -23,7 +23,7 @@ def main(n_pontos, NPA, measurements):
 
 
 
-	# DEFININDO O POLITPO NÃO SINALIZANTE
+	# BUILDING THE NON-SIG POLYTOPE
 	#___________________________________________________________________________________________________________________________________#
 
 	NS = build_ns_matrix(m)
@@ -38,13 +38,10 @@ def main(n_pontos, NPA, measurements):
 
 
 
-	# SORTEANDO PONTOS DENTRO DO POLITPO NÃO SINALIZANTE
+	# DRAWING THE CORRELATIONS IN NON-SIG POLYTOPE
 	#___________________________________________________________________________________________________________________________________#
 
-	sorteio_NS = sorteio(NS["A_ineq"], NS["b_ineq"], qtde, rng)
-	#print(sorteio_NS)
-	#print(type(sorteio_NS))
-	#print(sorteio_NS.shape)
+	draw_NS = draw(NS["A_ineq"], NS["b_ineq"], qtde, rng)
 
 	#___________________________________________________________________________________________________________________________________#
 
@@ -52,22 +49,22 @@ def main(n_pontos, NPA, measurements):
 
 
 
-	# CALCULA O VOLUME RELATIVO DO POLITOPO LOCAL
+	# COMPUTE THE RELATIVE VOLUME OF LOCAL SET
 	#___________________________________________________________________________________________________________________________________#
 
-	n_locais = 0
+	n_local = 0
 	v_new = L_polytope_extremal(m)
 
 	for i in range(qtde):
-		result_L = is_convex_combination_cvxpy(sorteio_NS[0][i], v_new)[0]
+		result_L = is_convex_combination_cvxpy(draw_NS[0][i], v_new)[0]
 		#print(result_L)
 		if result_L:
-			n_locais += 1
+			n_local += 1
 		else:
 			pass
 
-	vrel_l = (100*n_locais/qtde)
-	#print(f"O politopo local corresponde a {vrel_l}% do politopo não-sinalizante.")
+	vrel_l = (100*n_local/qtde)
+	#print(f"the local set corresponds to {vrel_l}% of non-sig set.")
 
 	#___________________________________________________________________________________________________________________________________#
 
@@ -75,20 +72,20 @@ def main(n_pontos, NPA, measurements):
 
 
 
-	# CALCULA O VOLUME RELATIVO DO CONJUNTO QUÂNTICO
+	# COMPUTE THE RELATIVE VOLUME OF QUANTUM SET
 	#___________________________________________________________________________________________________________________________________#
 
-	n_quanticos = 0
+	n_quantum = 0
 	for i in range(qtde):
-		result_Q = hierarquia_NPA(sorteio_NS[0][i], m, nivel_n_NPA)
+		result_Q = NPA_hierarchy(draw_NS[0][i], m, level_n_NPA)
 
 		if result_Q == 'optimal':
-			n_quanticos += 1
+			n_quantum += 1
 		else:
 			continue
 
-	vrel_q = (100*n_quanticos/qtde)
-	#print(f"O conjunto quântico corresponde a {vrel_q}% do politopo não-sinalizante.")
+	vrel_q = (100*n_quantum/qtde)
+	#print(f"the quantum set corresponds to {vrel_q}% of non-sig set.")
 
 	#___________________________________________________________________________________________________________________________________#
 
@@ -96,19 +93,19 @@ def main(n_pontos, NPA, measurements):
 
 
 
-	# CALCULA O VOLUME RELATIVO DO CONJUNTO QUASE-QUÂNTICO
+	# COMPUTE THE RELATIVE VOLUME OF ALMOST-QUANTUM SET
 	#___________________________________________________________________________________________________________________________________#
 
-	n_quase_quanticos = 0
+	n_almost_quantum = 0
 	for i in range(qtde):
-		result_AQ = hierarquia_NPA(sorteio_NS[0][i], m, 'AQ')
+		result_AQ = NPA_hierarchy(draw_NS[0][i], m, 'AQ')
 		if result_AQ == 'optimal':
-			n_quase_quanticos += 1
+			n_almost_quantum += 1
 		else:
 			continue
 
-	vrel_aq = (100*n_quase_quanticos/qtde)
-	#print(f"O conjunto quase-quântico corresponde a {vrel_aq}% do politopo não-sinalizante.")
+	vrel_aq = (100*n_almost_quantum/qtde)
+	#print(f"the almost-quantum set corresponds to {vrel_aq}% of non-sig set.")
 
 	#___________________________________________________________________________________________________________________________________#
 

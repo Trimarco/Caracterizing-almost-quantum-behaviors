@@ -7,55 +7,52 @@ import hopsy
 
 
 
+def draw(A, b, n_points, aleatorio=77):
+    problem = hopsy.Problem(A, b)
+    
+    # Round the polytope to ensure uniform mixing across anisotropic corners
+    problem = hopsy.round(problem) 
 
+    st_point = hopsy.compute_chebyshev_center(problem) 
+    
+    mc = hopsy.MarkovChain(problem, proposal=hopsy.UniformCoordinateHitAndRunProposal, starting_point=st_point)
+    rng = hopsy.RandomNumberGenerator(seed=aleatorio)
 
-def sorteio(A, b, n_points, aleatorio=77):
-	# o problema completo é definido pela distribuição alvo
-	# e pelo domínio restrito, definido pela desigualdade "Ax <= b"
-	problem = hopsy.Problem(A, b)
+    dimensions = A.shape[1]
+    optimal_thinning = max(100, dimensions * 10)
 
-	# the run object contains and constructs the markov chains. in the default case, the
-	# Run object will have a single chain using the Hit-and-Run proposal algorithm and is
-	# set to produce 10,000 samples.
-	st_point = hopsy.compute_chebyshev_center(problem) # this function computes the Chebyshev center of the polytope and uses it one as a starting point
-	mc = hopsy.MarkovChain(problem, proposal=hopsy.UniformHitAndRunProposal, starting_point=st_point)
-	rng= hopsy.RandomNumberGenerator(seed=aleatorio)
-
-	# call sample on the mc and rng objects 
-	acceptance_rate, states = hopsy.sample(mc, rngs=rng, n_samples=n_points, thinning=2)
-	
-	
-	return np.array(states)
+    acceptance_rate, states = hopsy.sample(mc, rngs=rng, n_samples=n_points, thinning=optimal_thinning)
+    return np.array(states)
 
 
 
 def build_ns_matrix(m):
     """
-    Constrói a matriz para as desigualdades p(a,b|x,y) >= 0
-    retornando A_ineq e b_ineq na forma A_ineq @ vars <= b_ineq,
-    onde a coluna da constante foi removida de A_ineq e colocada em b_ineq.
+    Constructs the matrix for the inequalities p(a,b|x,y) >= 0
+    returning A_ineq and b_ineq in the form A_ineq @ vars <= b_ineq,
+    where the constant column was removed from A_ineq and placed in b_ineq.
 
-    Retorna dicionário com:
-      - coeffs: matriz original (cada linha é 1/4*(1 + a A_x + b B_y + ab A_xB_y))
-      - A_ineq: matriz sem a coluna constante, shape (4*m*m, n_vars-1)
-      - b_ineq: vetor rhs shape (4*m*m,)
-      - var_names: nomes das variáveis (sem "const")
-      - rows_info: lista (a,b,x,y) de cada linha
+    Returns a dictionary with:
+        - coeffs: original matrix (each row is 1/4*(1 + a A_x + b B_y + ab A_xB_y))
+        - A_ineq: matrix without the constant column, shape (4*m*m, n_vars-1)
+        - b_ineq: rhs vector, shape (4*m*m,)
+        - var_names: variable names (without "const")
+        - rows_info: list of (a,b,x,y) for each row
     """
     if m < 1:
-        raise ValueError("m deve ser >= 1")
+        raise ValueError("m must be >= 1")
 
-    n_vars = 1 + 2*m + m*m  # inclui 'const'
+    n_vars = 1 + 2*m + m*m  # adds 'const'
     rows = []
     rows_info = []
 
-    # nomes das variáveis (com constante primeiro)
+    # variables names (constant name first)
     var_names_full = ["const"] + [f"A_{x}" for x in range(m)] + [f"B_{y}" for y in range(m)]
     for x in range(m):
         for y in range(m):
             var_names_full.append(f"A{x}B{y}")
 
-    # construir coeffs (como antes)
+    # build up coeffs (like before)
     for x in range(m):
         for y in range(m):
             for a in (-1, 1):
@@ -71,12 +68,12 @@ def build_ns_matrix(m):
 
     coeffs = np.vstack(rows)  # shape (4*m*m, n_vars)
 
-    # mover constante para o RHS:
-    # forma desejada: A_ineq @ vars <= b_ineq
-    A_ineq = -coeffs[:, 1:]        # remove a coluna da constante (1ª coluna)
-    b_ineq = coeffs[:, 0].copy()   # RHS = coeficiente da constante
+    # move constant to RHS:
+    # desired form: A_ineq @ vars <= b_ineq
+    A_ineq = -coeffs[:, 1:]        # removes the constant column (first column)
+    b_ineq = coeffs[:, 0].copy()   # RHS = constant coefficient
 
-    # nomes das variáveis sem a 'const'
+    # variables names without 'const'
     var_names = var_names_full[1:]
 
     return {
@@ -87,27 +84,15 @@ def build_ns_matrix(m):
         "rows_info": rows_info
     }
 
-'''# Exemplo de uso
-if __name__ == "__main__":
-    m = 3
-    M = build_ns_matrix(m)
-    np.set_printoptions(suppress=True, precision=3)
-    print("shape coeffs:", M["coeffs"].shape)        # (4*m*m, 1+2*m+m*m)
-    print("shape A_ineq (sem const):", M["A_ineq"].shape)  # (4*m*m, n_vars-1)
-    print("shape b_ineq:", M["b_ineq"].shape)
-    print("var names (sem const):", M["var_names"])
-    print(M["A_ineq"])
-    print(M["b_ineq"])'''
-
 
 
 def L_polytope_extremal(m):
-    # Gera todos os vértices do hipercubo [-1,1]^(2*m)
+    # Generates all hypercube verticies [-1,1]^(2*m)
     K = np.array(list(product([-1, 1], repeat=2*m)), dtype=int)  # shape (2**(2*m), 2*m)
     
-    # Divide os vértices em duas partes
-    K1 = K[:, :m]   # Primeiras m colunas
-    K2 = K[:, m:]   # Últimas m colunas
+    # Divide in two parts
+    K1 = K[:, :m]   # first m columns
+    K2 = K[:, m:]   # Lasts m columns
 
     c = np.zeros((2**(2*m), 2*m + m**2), dtype=int)
 
@@ -130,10 +115,10 @@ def is_convex_combination_cvxpy(V, M, tol=1e-7, return_weights=True):
     w = cp.Variable(k)
     constraints = [cp.sum(w) == 1, w >= 0, V == M.T @ w]
     prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.SCS)  # ou outro solver disponível
+    prob.solve(solver=cp.CLARABEL)  # or another avaliable solver
     if prob.status not in ("infeasible", "infeasible_inaccurate"):
         wval = w.value
-        # tolerância numérica
+        # numerical tolerance
         U = (M.T) @ wval
         if np.allclose(U, V, atol=tol):
             return (True, wval) if return_weights else True
@@ -143,26 +128,26 @@ def is_convex_combination_cvxpy(V, M, tol=1e-7, return_weights=True):
 
 def teste_NPA(p, m, nivel):
     """
-    Testa se o vetor p satisfaz o nível NPA indicado para m medições.
-    Retorna True se satisfaz, False caso contrário.
+    Verifies if the p vector satisfies the NPA level for m mesuraments.
+    Returns True is satisfies, False otherwise.
     """
-    # Declarando operadores para as partes
+    # Declaring the operators for the parties
     A = nc.generate_operators('A', m, hermitian=True)
     B = nc.generate_operators('B', m, hermitian=True)
 
-    # Tornando os operadores unitários e comutativos
+    # Making the operators unitary and commutativity
     subs = {A[i] ** 2: 1 for i in range(m)}  # Unitary
     subs.update({B[i] ** 2: 1 for i in range(m)})  # Unitary
     subs.update({A[i]*B[j]: B[j]*A[i] for i in range(m) for j in range(m)})  # Commutativity
 
-    # Criando o SDP
+    # creating the SDP
     sdp = nc.SdpRelaxation(A + B)
 
-    # nível especial "1+AB" (almost quantum)
+    # special level "1+AB" (almost quantum)
     if type(nivel) != int:
 
-        # Definindo as igualdades de momentos com base no vetor p
-        # Assumindo p[i] corresponde aos correladores <A_i B_j>
+        # Defining the moment equalities based on p vector
+        # Assuming p[i] corresponds to the correlators <A_i B_j> 
         cons = np.zeros(2*m + m**2, dtype=object)
 
         for i in range(m):
@@ -172,19 +157,19 @@ def teste_NPA(p, m, nivel):
                 idx_ab = 2*m + i*m + j
                 cons[idx_ab] = A[i]*B[j] - p[idx_ab]
 
-        # Obter a relaxação do nível NPA
+        # Getting the relaxion due to NPA level
         sdp.get_relaxation(level=1, objective=0, substitutions=subs, momentequalities=cons)
         
-        # Resolver usando MOSEK
-        sdp.solve(solver='mosek')
+        # Solving
+        sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
         
         return sdp.status
 
-    # nivel "nivel" da hierarquia
+    # level "nivel" from hierarchy
     else:
         
-        # Definindo as igualdades de momentos com base no vetor p
-        # Assumindo p[i] corresponde aos correladores <A_i B_j>
+        # Defining the moment equalities based on p vector
+        # Assuming p[i] corresponds to the correlators <A_i B_j> 
         cons = np.zeros(2*m + m**2, dtype=object)
 
         for i in range(m):
@@ -194,78 +179,69 @@ def teste_NPA(p, m, nivel):
                 idx_ab = 2*m + i*m + j
                 cons[idx_ab] = A[i]*B[j] - p[idx_ab]
 
-        # Obter a relaxação do nível NPA
+        # Getting the relaxion due to NPA level
         sdp.get_relaxation(level=2, objective=0, substitutions=subs, momentequalities=cons)
         
-        # Resolver usando MOSEK
-        sdp.solve(solver='mosek')
+        # Solving
+        sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
         
         return sdp.status
 
 
 
-def hierarquia_NPA(p, m, nivel):
-
-    """
-    Test membership of p in an NPA relaxation.
-    - p: vector with layout [<A_0>.. <A_{m-1}>, <B_0>.. <B_{m-1}>, <A_i B_j> flattened row-major]
-         length must be 2*m + m*m.
-    - m: number of measurements per party
-    - nivel:
-        * if isinstance(nivel, int): treat as standard NPA level = nivel (quantum-approximation).
-        * otherwise: treat as the '1+AB' (almost-quantum) mixed-level case (level=1 with AB extra monomials).
-    Returns: (bool, status_string) where bool=True means SDP found a feasible solution consistent with p.
-    """
-
-    # Sanity check
+def NPA_hierarchy(p, m, nivel):
     expected_len = 2*m + m*m
     if len(p) != expected_len:
         raise ValueError(f"p must have length {expected_len}; got {len(p)}")
 
-    # generate operators
     A = nc.generate_operators('A', m, hermitian=True)
     B = nc.generate_operators('B', m, hermitian=True)
 
-    # substitutions (idempotency / unitary for ±1 outcomes)
     one = sp.Integer(1)
     substitutions = {A[i]**2: one for i in range(m)}
     substitutions.update({B[j]**2: one for j in range(m)})
-    substitutions.update({A[i]*B[j]: B[j]*A[i] for i in range(m) for j in range(m)})  # Commutativity
+    substitutions.update({A[i]*B[j]: B[j]*A[i] for i in range(m) for j in range(m)})
 
-    # build moment equalities list
     mom_eqs = []
     for i in range(m):
-        mom_eqs.append(A[i] - sp.N(p[i]))          # <A_i> = p[i]
+        mom_eqs.append(A[i] - sp.N(p[i]))
     for j in range(m):
-        mom_eqs.append(B[j] - sp.N(p[m + j]))      # <B_j> = p[m+j]
+        mom_eqs.append(B[j] - sp.N(p[m + j]))
     for i in range(m):
         for j in range(m):
             idx = 2*m + i*m + j
-            mom_eqs.append(A[i]*B[j] - sp.N(p[idx]))  # <A_i B_j> = p[idx]
+            mom_eqs.append(A[i]*B[j] - sp.N(p[idx]))
 
     sdp = nc.SdpRelaxation(A + B)
 
     if isinstance(nivel, int):
-        # -------------------------
-        # QUANTUM-SET (NPA) CASE
-        # -------------------------
+        # --- QUANTUM SET (NPA Level 2) ---
         level = int(nivel)
         extramonomials = None
     else:
-        # -------------------------
-        # ALMOST-QUANTUM (1+AB) CASE
-        # -------------------------
-        level = 1
-        extramonomials = [A[i]*B[j] for i in range(m) for j in range(m)]
+        # --- ALMOST-QUANTUM SET (1+AB) ---
+        # level=-1 forces ncpol2sdpa to use ONLY the supplied basis
+        level = -1  
+        # Basis = {1} + {A_i} + {B_j} + {A_i * B_j}
+        extramonomials = [one] + list(A) + list(B) + [A[i]*B[j] for i in range(m) for j in range(m)]
 
-    # Build relaxation (feasibility objective = 0)
     sdp.get_relaxation(level=level,
                        objective=0,
                        substitutions=substitutions,
                        momentequalities=mom_eqs,
                        extramonomials=extramonomials)
 
-    # Solve (use MOSEK if available)
-    sdp.solve(solver='mosek')
-
+    sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
     return sdp.status
+
+
+
+def loading(total_interations, current_step, size=95):
+        
+        tamanho_barra = size
+        proporcao = current_step / total_interations
+        blocos_cheios = int(tamanho_barra * proporcao)
+        blocos_vazios = tamanho_barra - blocos_cheios
+        barra = ('▌' * blocos_cheios) + (' ' * blocos_vazios)
+
+        return print(f"{barra} {proporcao * 100:.1f}%")
