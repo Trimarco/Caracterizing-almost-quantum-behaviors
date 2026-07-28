@@ -16,7 +16,6 @@ def main(n_pontos, NPA, measurements):
 	level_n_NPA = NPA  # level "n" of NPA hierarchy
 	rng = random.randint(1, 10000)  # random number generator
 	m = measurements  # number of possible mesuramentsfor each part A and B (2, m, r)
-	print(rng)
 
 	#___________________________________________________________________________________________________________________________________#
 
