@@ -3,10 +3,10 @@ from definitions import loading
 import matplotlib.pyplot as plt
 import numpy as np
 
-m = [2, 3, 4]
+m = [2, 3, 4, 5]
 level = 2
-n_rounds = 20
-n_correlations = 5000
+n_rounds = 10
+n_correlations = 10000
 
 results = [[], [], []]
 
