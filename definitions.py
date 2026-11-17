@@ -2,19 +2,67 @@ import numpy as np
 import cvxpy as cp
 import sympy as sp
 from itertools import product
+from scipy.optimize import linprog
 import ncpol2sdpa as nc
 import hopsy
 
 
 
-def draw(A, b, n_points, aleatorio=77):
-    problem = hopsy.Problem(A, b)
-    
-    # Round the polytope to ensure uniform mixing across anisotropic corners
-    problem = hopsy.round(problem) 
+def get_cg_dim(m, k):
+    #Calculates the dimension of the Collins-Gisin space.
+    return 2 * m * (k - 1) + (m ** 2) * ((k - 1) ** 2)
 
-    st_point = hopsy.compute_chebyshev_center(problem) 
-    
+
+
+def _manual_chebyshev_center(A, b, shrink=1e-7):
+    """
+    Fallback Chebyshev center via scipy.linprog, used when hopsy's own
+    LP-based routine fails numerically (e.g. ValueError: Chebyshev center
+    is outside of polytope). b is shrunk slightly so the returned point is
+    strictly interior, avoiding a boundary/near-boundary starting point.
+    """
+    n_vars = A.shape[1]
+    norms = np.linalg.norm(A, axis=1)
+    norms[norms == 0] = 1.0  # guard against degenerate zero rows
+
+    c = np.zeros(n_vars + 1)
+    c[-1] = -1.0  # maximize r  ==  minimize -r
+
+    A_ub = np.hstack([A, norms.reshape(-1, 1)])
+    b_ub = b - shrink  # small margin so x_c ends up strictly inside
+
+    bounds = [(None, None)] * n_vars + [(0, None)]
+
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    if not res.success:
+        raise RuntimeError(f"Fallback Chebyshev center LP failed: {res.message}")
+
+    return res.x[:n_vars]
+
+
+
+def draw(A, b, n_points, aleatorio=77, max_retries=5):
+    # Round the polytope to ensure uniform mixing across anisotropic corners
+    problem = hopsy.Problem(A, b)
+    rounded_problem = hopsy.round(problem)
+
+    st_point = None
+    for attempt in range(max_retries):
+        try:
+            st_point = hopsy.compute_chebyshev_center(rounded_problem)
+            problem = rounded_problem
+            break
+        except ValueError:
+            # Numerically borderline case: rebuilding the rounding can
+            # shift the tiny floating-point inconsistency enough to pass.
+            rounded_problem = hopsy.round(hopsy.Problem(A, b))
+
+    if st_point is None:
+        # Give up on rounding entirely; fall back to a manually computed,
+        # strictly-interior Chebyshev center on the original polytope.
+        st_point = _manual_chebyshev_center(A, b)
+        problem = hopsy.Problem(A, b)
+
     mc = hopsy.MarkovChain(problem, proposal=hopsy.UniformCoordinateHitAndRunProposal, starting_point=st_point)
     rng = hopsy.RandomNumberGenerator(seed=aleatorio)
 
@@ -25,219 +73,239 @@ def draw(A, b, n_points, aleatorio=77):
     return np.array(states)
 
 
-
-def build_ns_matrix(m):
+def build_ns_matrix(m, k):
     """
-    Constructs the matrix for the inequalities p(a,b|x,y) >= 0
-    returning A_ineq and b_ineq in the form A_ineq @ vars <= b_ineq,
-    where the constant column was removed from A_ineq and placed in b_ineq.
-
-    Returns a dictionary with:
-        - coeffs: original matrix (each row is 1/4*(1 + a A_x + b B_y + ab A_xB_y))
-        - A_ineq: matrix without the constant column, shape (4*m*m, n_vars-1)
-        - b_ineq: rhs vector, shape (4*m*m,)
-        - var_names: variable names (without "const")
-        - rows_info: list of (a,b,x,y) for each row
+    Constructs the Non-Signaling polytope using Collins-Gisin parameterization.
     """
-    if m < 1:
-        raise ValueError("m must be >= 1")
+    if m < 1 or k < 2:
+        raise ValueError("m must be >= 1 and k must be >= 2")
 
-    n_vars = 1 + 2*m + m*m  # adds 'const'
+    n_vars = get_cg_dim(m, k)
     rows = []
-    rows_info = []
+    b_ineq = []
 
-    # variables names (constant name first)
-    var_names_full = ["const"] + [f"A_{x}" for x in range(m)] + [f"B_{y}" for y in range(m)]
+    # Helpers to find the correct index in the vector
+    def idx_A(x, a): return x * (k - 1) + a
+    def idx_B(y, b): return m * (k - 1) + y * (k - 1) + b
+    def idx_AB(x, y, a, b):
+        return 2 * m * (k - 1) + (x * m + y) * ((k - 1) ** 2) + a * (k - 1) + b
+
     for x in range(m):
         for y in range(m):
-            var_names_full.append(f"A{x}B{y}")
+            # 1. P(a,b | x,y) >= 0 (for a, b < k-1)
+            for a in range(k - 1):
+                for b in range(k - 1):
+                    row = np.zeros(n_vars)
+                    row[idx_AB(x, y, a, b)] = -1.0
+                    rows.append(row)
+                    b_ineq.append(0.0)
 
-    # build up coeffs (like before)
-    for x in range(m):
-        for y in range(m):
-            for a in (-1, 1):
-                for b in (-1, 1):
-                    coeff = np.zeros(n_vars, dtype=float)
-                    coeff[0] = 1.0
-                    coeff[1 + x] = (1.0) * a
-                    coeff[1 + m + y] = (1.0) * b
-                    idx_ab = 1 + 2*m + x*m + y
-                    coeff[idx_ab] = (1.0) * (a*b)
-                    rows.append(coeff)
-                    rows_info.append((a, b, x, y))
+            # 2. P(a, k-1 | x,y) >= 0 => P_A(a|x) - sum_b P_AB(a,b|x,y) >= 0
+            for a in range(k - 1):
+                row = np.zeros(n_vars)
+                row[idx_A(x, a)] = -1.0
+                for b in range(k - 1):
+                    row[idx_AB(x, y, a, b)] = 1.0
+                rows.append(row)
+                b_ineq.append(0.0)
 
-    coeffs = np.vstack(rows)  # shape (4*m*m, n_vars)
+            # 3. P(k-1, b | x,y) >= 0 => P_B(b|y) - sum_a P_AB(a,b|x,y) >= 0
+            for b in range(k - 1):
+                row = np.zeros(n_vars)
+                row[idx_B(y, b)] = -1.0
+                for a in range(k - 1):
+                    row[idx_AB(x, y, a, b)] = 1.0
+                rows.append(row)
+                b_ineq.append(0.0)
 
-    # move constant to RHS:
-    # desired form: A_ineq @ vars <= b_ineq
-    A_ineq = -coeffs[:, 1:]        # removes the constant column (first column)
-    b_ineq = coeffs[:, 0].copy()   # RHS = constant coefficient
-
-    # variables names without 'const'
-    var_names = var_names_full[1:]
+            # 4. P(k-1, k-1 | x,y) >= 0 => sum_a P_A + sum_b P_B - sum_ab P_AB <= 1
+            row = np.zeros(n_vars)
+            for a in range(k - 1):
+                row[idx_A(x, a)] = 1.0
+            for b in range(k - 1):
+                row[idx_B(y, b)] = 1.0
+            for a in range(k - 1):
+                for b in range(k - 1):
+                    row[idx_AB(x, y, a, b)] = -1.0
+            rows.append(row)
+            b_ineq.append(1.0)
 
     return {
-        "coeffs": coeffs,
-        "A_ineq": A_ineq,
-        "b_ineq": b_ineq,
-        "var_names": var_names,
-        "rows_info": rows_info
+        "A_ineq": np.vstack(rows),
+        "b_ineq": np.array(b_ineq)
     }
 
 
+def L_polytope_extremal(m, k):
+    """
+    Generates all deterministic local strategies for m measurements and k outcomes.
+    """
+    strategies = list(product(range(k), repeat=m))
+    n_strats = len(strategies)
+    n_vars = get_cg_dim(m, k)
+    c = np.zeros((n_strats * n_strats, n_vars), dtype=float)
 
-def L_polytope_extremal(m):
-    # Generates all hypercube verticies [-1,1]^(2*m)
-    K = np.array(list(product([-1, 1], repeat=2*m)), dtype=int)  # shape (2**(2*m), 2*m)
-    
-    # Divide in two parts
-    K1 = K[:, :m]   # first m columns
-    K2 = K[:, m:]   # Lasts m columns
+    def idx_A(x, a): return x * (k - 1) + a
+    def idx_B(y, b): return m * (k - 1) + y * (k - 1) + b
+    def idx_AB(x, y, a, b):
+        return 2 * m * (k - 1) + (x * m + y) * ((k - 1) ** 2) + a * (k - 1) + b
 
-    c = np.zeros((2**(2*m), 2*m + m**2), dtype=int)
-
-    c[:, :m] = K1
-    c[:, m:2*m] = K2
-
-    for j in range(len(K)):
-        for i in range(m):
-            c[j,2*m+i*m:(3+i)*m] = K1[j,i]*K2[j,:]
+    row_idx = 0
+    for S_A in strategies:
+        for S_B in strategies:
+            # Add Alice's marginals
+            for x in range(m):
+                if S_A[x] < k - 1:
+                    c[row_idx, idx_A(x, S_A[x])] = 1.0
+            # Add Bob's marginals
+            for y in range(m):
+                if S_B[y] < k - 1:
+                    c[row_idx, idx_B(y, S_B[y])] = 1.0
+            # Add Joint distributions
+            for x in range(m):
+                for y in range(m):
+                    if S_A[x] < k - 1 and S_B[y] < k - 1:
+                        c[row_idx, idx_AB(x, y, S_A[x], S_B[y])] = 1.0
+            row_idx += 1
     return c
 
 
 
 def is_convex_combination_cvxpy(V, M, tol=1e-7, return_weights=True):
+    """
+    Tests whether V lies in the convex hull of the rows of M.
+
+    Reformulated as a phase-1 LP (minimize the L1 residual of the equality
+    system over the probability simplex) solved with HiGHS via scipy, rather
+    than posing a zero-objective feasibility problem to a conic interior-point
+    solver. The original CLARABEL formulation had no objective to provide a
+    descent direction, which made it numerically fragile (SolverError /
+    "solution may be inaccurate") whenever V sat close to the hull boundary
+    -- a common occurrence here since we're testing membership in a polytope
+    face, not a generic interior point. The LP residual is always well-posed:
+    it degrades gracefully to "small positive distance" instead of failing
+    outright, and HiGHS' simplex/IPM path handles this degenerate class of
+    problem far more robustly and faster than a conic solver.
+
+    Name kept as `is_convex_combination_cvxpy` for drop-in compatibility with
+    existing callers, even though cvxpy is no longer used here.
+    """
     V = np.asarray(V, dtype=float)
     M = np.asarray(M, dtype=float)
     k, n = M.shape
     if V.shape[0] != n:
         raise ValueError("Dimensão incompatível.")
-    w = cp.Variable(k)
-    constraints = [cp.sum(w) == 1, w >= 0, V == M.T @ w]
-    prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.CLARABEL)  # or another avaliable solver
-    if prob.status not in ("infeasible", "infeasible_inaccurate"):
-        wval = w.value
-        # numerical tolerance
-        U = (M.T) @ wval
-        if np.allclose(U, V, atol=tol):
-            return (True, wval) if return_weights else True
-    return (False, None) if return_weights else False
+
+    # Variables: [w (k weights on the simplex), s_plus (n), s_minus (n)]
+    # Minimize sum(s_plus + s_minus) subject to M.T @ w - V = s_plus - s_minus,
+    # sum(w) == 1, w >= 0, s_plus, s_minus >= 0.
+    # Optimal value ~ 0  <=>  V is (numerically) in the convex hull of M's rows.
+    c = np.concatenate([np.zeros(k), np.ones(2 * n)])
+
+    A_eq = np.zeros((n + 1, k + 2 * n))
+    A_eq[:n, :k] = M.T
+    A_eq[:n, k:k + n] = -np.eye(n)
+    A_eq[:n, k + n:] = np.eye(n)
+    A_eq[n, :k] = 1.0
+
+    b_eq = np.concatenate([V, [1.0]])
+
+    try:
+        res = linprog(
+            c, A_eq=A_eq, b_eq=b_eq,
+            bounds=[(0, None)] * (k + 2 * n),
+            method="highs",
+        )
+    except Exception:
+        # Extremely defensive: HiGHS should not raise, but guarantee this
+        # function never crashes a worker process regardless.
+        return (False, None) if return_weights else False
+
+    if not res.success:
+        return (False, None) if return_weights else False
+
+    inside = res.fun < tol
+    wval = res.x[:k] if inside else None
+    return (inside, wval) if return_weights else inside
 
 
 
-def teste_NPA(p, m, nivel):
+def NPA_hierarchy(p, m, k, nivel):
     """
-    Verifies if the p vector satisfies the NPA level for m mesuraments.
-    Returns True is satisfies, False otherwise.
+    NPA implemented using Projectors for k-outcomes instead of unitary operators.
     """
-    # Declaring the operators for the parties
-    A = nc.generate_operators('A', m, hermitian=True)
-    B = nc.generate_operators('B', m, hermitian=True)
+    num_proj = m * (k - 1)
+    E = nc.generate_operators('E', num_proj, hermitian=True)
+    F = nc.generate_operators('F', num_proj, hermitian=True)
 
-    # Making the operators unitary and commutativity
-    subs = {A[i] ** 2: 1 for i in range(m)}  # Unitary
-    subs.update({B[i] ** 2: 1 for i in range(m)})  # Unitary
-    subs.update({A[i]*B[j]: B[j]*A[i] for i in range(m) for j in range(m)})  # Commutativity
+    def idx_A(x, a): return x * (k - 1) + a
+    def idx_B(y, b): return y * (k - 1) + b
 
-    # creating the SDP
-    sdp = nc.SdpRelaxation(A + B)
+    zero = sp.Integer(0)
+    subs = {}
 
-    # special level "1+AB" (almost quantum)
-    if type(nivel) != int:
+    # 1. Projectors square to themselves (E^2 = E) and are orthogonal
+    for x in range(m):
+        for a in range(k - 1):
+            i = idx_A(x, a)
+            subs[E[i]**2] = E[i]
+            for a_prime in range(k - 1):
+                if a != a_prime:
+                    subs[E[i]*E[idx_A(x, a_prime)]] = zero
 
-        # Defining the moment equalities based on p vector
-        # Assuming p[i] corresponds to the correlators <A_i B_j> 
-        cons = np.zeros(2*m + m**2, dtype=object)
+    for y in range(m):
+        for b in range(k - 1):
+            j = idx_B(y, b)
+            subs[F[j]**2] = F[j]
+            for b_prime in range(k - 1):
+                if b != b_prime:
+                    subs[F[j]*F[idx_B(y, b_prime)]] = zero
 
-        for i in range(m):
-            cons[i] = A[i] - p[i]
-            cons[m+i] = B[i] - p[m+i]
-            for j in range(m):
-                idx_ab = 2*m + i*m + j
-                cons[idx_ab] = A[i]*B[j] - p[idx_ab]
+    # 2. Alice and Bob commute
+    for i in range(num_proj):
+        for j in range(num_proj):
+            subs[E[i]*F[j]] = F[j]*E[i]
 
-        # Getting the relaxion due to NPA level
-        sdp.get_relaxation(level=1, objective=0, substitutions=subs, momentequalities=cons)
-        
-        # Solving
-        sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
-        
-        return sdp.status
-
-    # level "nivel" from hierarchy
-    else:
-        
-        # Defining the moment equalities based on p vector
-        # Assuming p[i] corresponds to the correlators <A_i B_j> 
-        cons = np.zeros(2*m + m**2, dtype=object)
-
-        for i in range(m):
-            cons[i] = A[i] - p[i]
-            cons[m+i] = B[i] - p[m+i]
-            for j in range(m):
-                idx_ab = 2*m + i*m + j
-                cons[idx_ab] = A[i]*B[j] - p[idx_ab]
-
-        # Getting the relaxion due to NPA level
-        sdp.get_relaxation(level=2, objective=0, substitutions=subs, momentequalities=cons)
-        
-        # Solving
-        sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
-        
-        return sdp.status
-
-
-
-def NPA_hierarchy(p, m, nivel):
-    expected_len = 2*m + m*m
-    if len(p) != expected_len:
-        raise ValueError(f"p must have length {expected_len}; got {len(p)}")
-
-    A = nc.generate_operators('A', m, hermitian=True)
-    B = nc.generate_operators('B', m, hermitian=True)
-
-    one = sp.Integer(1)
-    substitutions = {A[i]**2: one for i in range(m)}
-    substitutions.update({B[j]**2: one for j in range(m)})
-    substitutions.update({A[i]*B[j]: B[j]*A[i] for i in range(m) for j in range(m)})
-
+    # 3. Equating SDP variables to Collins-Gisin probabilities
     mom_eqs = []
-    for i in range(m):
-        mom_eqs.append(A[i] - sp.N(p[i]))
-    for j in range(m):
-        mom_eqs.append(B[j] - sp.N(p[m + j]))
-    for i in range(m):
-        for j in range(m):
-            idx = 2*m + i*m + j
-            mom_eqs.append(A[i]*B[j] - sp.N(p[idx]))
+    for x in range(m):
+        for a in range(k - 1):
+            i = idx_A(x, a)
+            mom_eqs.append(E[i] - sp.N(p[i]))
 
-    sdp = nc.SdpRelaxation(A + B)
+    offset_B = m * (k - 1)
+    for y in range(m):
+        for b in range(k - 1):
+            j = idx_B(y, b)
+            mom_eqs.append(F[j] - sp.N(p[offset_B + j]))
+
+    offset_AB = 2 * m * (k - 1)
+    for x in range(m):
+        for y in range(m):
+            for a in range(k - 1):
+                for b in range(k - 1):
+                    p_idx = offset_AB + (x * m + y) * ((k - 1) ** 2) + a * (k - 1) + b
+                    mom_eqs.append(E[idx_A(x, a)] * F[idx_B(y, b)] - sp.N(p[p_idx]))
+
+    sdp = nc.SdpRelaxation(E + F)
 
     if isinstance(nivel, int):
-        # --- QUANTUM SET (NPA Level 2) ---
         level = int(nivel)
         extramonomials = None
     else:
-        # --- ALMOST-QUANTUM SET (1+AB) ---
-        # level=-1 forces ncpol2sdpa to use ONLY the supplied basis
-        level = -1  
-        # Basis = {1} + {A_i} + {B_j} + {A_i * B_j}
-        extramonomials = [one] + list(A) + list(B) + [A[i]*B[j] for i in range(m) for j in range(m)]
+        # Almost-Quantum set using 1+AB basis for Projectors
+        level = -1
+        one = sp.Integer(1)
+        extramonomials = [one] + list(E) + list(F) + [E[i]*F[j] for i in range(num_proj) for j in range(num_proj)]
 
-    sdp.get_relaxation(level=level,
-                       objective=0,
-                       substitutions=substitutions,
-                       momentequalities=mom_eqs,
-                       extramonomials=extramonomials)
-
+    sdp.get_relaxation(level=level, objective=0, substitutions=subs, momentequalities=mom_eqs, extramonomials=extramonomials)
     sdp.solve(solver='cvxpy', solverparameters={'solver': cp.CVXOPT})
     return sdp.status
 
 
 
 def loading(total_interations, current_step, size=95):
-        
+
         tamanho_barra = size
         proporcao = current_step / total_interations
         blocos_cheios = int(tamanho_barra * proporcao)

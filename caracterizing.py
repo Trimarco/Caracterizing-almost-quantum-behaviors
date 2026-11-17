@@ -1,112 +1,80 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import axes3d
 from itertools import product
-from definitions import build_ns_matrix, L_polytope_extremal, is_convex_combination_cvxpy, teste_NPA, draw, NPA_hierarchy
-import random
+from definitions import build_ns_matrix, L_polytope_extremal, is_convex_combination_cvxpy, draw, NPA_hierarchy
 
 
-
-def main(n_pontos, NPA, measurements):
-
-	# DEFINING THE PARAMETERS
-	#___________________________________________________________________________________________________________________________________#
-
-	qtde = n_pontos  # numbevr of correlations drawed in non-sig polytope 
-	level_n_NPA = NPA  # level "n" of NPA hierarchy
-	rng = random.randint(1, 10000)  # random number generator
-	m = measurements  # number of possible mesuramentsfor each part A and B (2, m, r)
-
-	#___________________________________________________________________________________________________________________________________#
+import time
 
 
+def main(n_pontos, NPA, measurements, outcomes, seed, progress_every=None):
+    """
+    seed is now a required, caller-supplied argument instead of being drawn
+    from `random.randint` inside the worker. The old approach used the
+    unseeded global `random` module, which (a) is not reseeded across forked
+    ProcessPoolExecutor workers, risking identical draws across rounds, and
+    (b) made every run irreproducible -- there was no way to rerun a failed
+    correlation or verify a reported volume. The driver is now responsible
+    for handing out a distinct seed per (m, round) pair.
 
+    progress_every: print a progress line every this many correlations,
+    within each of the three stages. Defaults to ~20 updates per stage
+    (qtde // 20, floored at 1). Each line is tagged with (m, k, seed) so
+    that output from multiple ProcessPoolExecutor workers running
+    concurrently -- which will interleave on stdout -- stays attributable
+    to the round it came from.
+    """
 
+    qtde = n_pontos
+    level_n_NPA = NPA
+    m = measurements
+    k = outcomes
 
-	# BUILDING THE NON-SIG POLYTOPE
-	#___________________________________________________________________________________________________________________________________#
+    tag = f"[m={m} k={k} seed={seed}]"
+    step = progress_every or max(1, qtde // 20)
 
-	NS = build_ns_matrix(m)
-	#print(NS["A_ineq"].shape)
-	#print(A_NS)
-	#print(b_NS.shape)
-	#print(b_NS)
+    NS = build_ns_matrix(m, k)
 
-	#___________________________________________________________________________________________________________________________________#
+    print(f"{tag} sampling {qtde} correlations...", flush=True)
+    t0 = time.time()
+    draw_NS = draw(NS["A_ineq"], NS["b_ineq"], qtde, seed)
+    print(f"{tag} sampling done ({time.time() - t0:.1f}s)", flush=True)
 
+    # COMPUTE THE RELATIVE VOLUME OF LOCAL SET
+    n_local = 0
+    v_new = L_polytope_extremal(m, k)
 
+    t0 = time.time()
+    for i in range(qtde):
+        result_L = is_convex_combination_cvxpy(draw_NS[0][i], v_new)[0]
+        if result_L:
+            n_local += 1
+        if (i + 1) % step == 0 or (i + 1) == qtde:
+            print(f"{tag} LOCAL     {i + 1}/{qtde}  ({time.time() - t0:.1f}s elapsed)", flush=True)
 
+    vrel_l = (100 * n_local / qtde)
 
+    # COMPUTE THE RELATIVE VOLUME OF QUANTUM SET
+    n_quantum = 0
+    t0 = time.time()
+    for i in range(qtde):
+        result_Q = NPA_hierarchy(draw_NS[0][i], m, k, level_n_NPA)
+        if result_Q == 'optimal':
+            n_quantum += 1
+        if (i + 1) % step == 0 or (i + 1) == qtde:
+            print(f"{tag} QUANTUM   {i + 1}/{qtde}  ({time.time() - t0:.1f}s elapsed)", flush=True)
 
-	# DRAWING THE CORRELATIONS IN NON-SIG POLYTOPE
-	#___________________________________________________________________________________________________________________________________#
+    vrel_q = (100 * n_quantum / qtde)
 
-	draw_NS = draw(NS["A_ineq"], NS["b_ineq"], qtde, rng)
+    # COMPUTE THE RELATIVE VOLUME OF ALMOST-QUANTUM SET
+    n_almost_quantum = 0
+    t0 = time.time()
+    for i in range(qtde):
+        result_AQ = NPA_hierarchy(draw_NS[0][i], m, k, 'AQ')
+        if result_AQ == 'optimal':
+            n_almost_quantum += 1
+        if (i + 1) % step == 0 or (i + 1) == qtde:
+            print(f"{tag} A-QUANTUM {i + 1}/{qtde}  ({time.time() - t0:.1f}s elapsed)", flush=True)
 
-	#___________________________________________________________________________________________________________________________________#
+    vrel_aq = (100 * n_almost_quantum / qtde)
 
-
-
-
-
-	# COMPUTE THE RELATIVE VOLUME OF LOCAL SET
-	#___________________________________________________________________________________________________________________________________#
-
-	n_local = 0
-	v_new = L_polytope_extremal(m)
-
-	for i in range(qtde):
-		result_L = is_convex_combination_cvxpy(draw_NS[0][i], v_new)[0]
-		#print(result_L)
-		if result_L:
-			n_local += 1
-		else:
-			pass
-
-	vrel_l = (100*n_local/qtde)
-	#print(f"the local set corresponds to {vrel_l}% of non-sig set.")
-
-	#___________________________________________________________________________________________________________________________________#
-
-
-
-
-
-	# COMPUTE THE RELATIVE VOLUME OF QUANTUM SET
-	#___________________________________________________________________________________________________________________________________#
-
-	n_quantum = 0
-	for i in range(qtde):
-		result_Q = NPA_hierarchy(draw_NS[0][i], m, level_n_NPA)
-
-		if result_Q == 'optimal':
-			n_quantum += 1
-		else:
-			continue
-
-	vrel_q = (100*n_quantum/qtde)
-	#print(f"the quantum set corresponds to {vrel_q}% of non-sig set.")
-
-	#___________________________________________________________________________________________________________________________________#
-
-
-
-
-
-	# COMPUTE THE RELATIVE VOLUME OF ALMOST-QUANTUM SET
-	#___________________________________________________________________________________________________________________________________#
-
-	n_almost_quantum = 0
-	for i in range(qtde):
-		result_AQ = NPA_hierarchy(draw_NS[0][i], m, 'AQ')
-		if result_AQ == 'optimal':
-			n_almost_quantum += 1
-		else:
-			continue
-
-	vrel_aq = (100*n_almost_quantum/qtde)
-	#print(f"the almost-quantum set corresponds to {vrel_aq}% of non-sig set.")
-
-	#___________________________________________________________________________________________________________________________________#
-
-	return [vrel_l, vrel_q, vrel_aq]
+    return [vrel_l, vrel_q, vrel_aq]
