@@ -37,4 +37,5 @@ After completing all measurements, plot the results.
 
 # Acknowledgment
 
-This study was financed by the brazilian National Council for Scientific and Technological Development (CNPq) and by the brazilian Coordination for the Improvement of Higher Education Personnel (CAPES)
+This study was financed by the brazilian National Council for Scientific and Technological Development (CNPq) and by the brazilian Coordination for the Improvement of Higher Education Personnel (CAPES).
+We also thank the Coaraci Supercomputer for computer time (Fapesp grant \#2019/17874-0) and the Center for Computing in Engineering and Sciences at Unicamp (Fapesp grant \#2013/08293-7).
